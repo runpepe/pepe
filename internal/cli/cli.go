@@ -51,6 +51,8 @@ func Run(args []string, version string) (err error) {
 		return runAgent(args[1:])
 	case "status":
 		return status(args[1:])
+	case "replay":
+		return replay(args[1:])
 	case "claim":
 		return claim(args[1:])
 	case "install":
@@ -69,6 +71,7 @@ func help() {
   pepe run        Connect this workspace and deliver webhooks locally
   pepe serve      Run a public relay (SQLite-backed)
   pepe status     Show relay health and queue counts
+  pepe replay     Requeue a stored delivery for this workspace
   pepe claim      Bind a repository ID and PR to this workspace
   pepe install    Install a Linux systemd relay; optionally configure Caddy
   pepe uninstall  Remove the service; preserve state unless --purge
@@ -255,11 +258,15 @@ func runAgent(args []string) error {
 			log.Printf("poll failed: %v", err)
 		} else {
 			for _, e := range batch.Events {
+				if err = fetchEvent(ctx, client, *server, i, &e); err != nil {
+					log.Printf("fetch %s failed: %v", e.Delivery, err)
+					break
+				}
 				if err = deliver(ctx, client, *target, os.Getenv(*localSecret), e); err != nil {
 					log.Printf("delivery %s failed: %v (will retry)", e.Delivery, err)
 					break
 				}
-				if err = request(ctx, client, *server, "/sessions/"+i.ID+"/ack", i.Token, map[string]string{"delivery": e.Delivery}, nil); err != nil {
+				if err = request(ctx, client, *server, "/sessions/"+i.ID+"/ack", i.Token, map[string]any{"delivery": e.Delivery, "attempt": e.Attempt}, nil); err != nil {
 					log.Printf("ack failed: %v", err)
 					break
 				}
@@ -313,4 +320,35 @@ func claim(args []string) error {
 		return err
 	}
 	return request(context.Background(), apiClient(), *server, "/sessions/"+i.ID+"/claim", i.Token, map[string]int64{"repo": *repo, "pr": *pr}, nil)
+}
+
+func replay(args []string) error {
+	f := flags("replay")
+	server := f.String("server", os.Getenv("PEPE_SERVER"), "public relay URL")
+	state := f.String("state", ".pepe/identity.json", "workspace identity")
+	delivery := f.String("delivery", "", "stored upstream delivery ID")
+	if err := parse(f, args); err != nil {
+		return err
+	}
+	if *delivery == "" {
+		return errors.New("delivery required")
+	}
+	if err := relay.ValidateURL(*server); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(*state)
+	if err != nil {
+		return err
+	}
+	var i identity
+	if err = json.Unmarshal(b, &i); err != nil {
+		return err
+	}
+	var out any
+	if err = request(context.Background(), apiClient(), *server, "/sessions/"+i.ID+"/replay", i.Token, map[string]string{"delivery": *delivery}, &out); err != nil {
+		return err
+	}
+	b, _ = json.Marshal(out)
+	fmt.Println(string(b))
+	return nil
 }

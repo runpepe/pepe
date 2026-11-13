@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -85,6 +86,14 @@ func (f *fixture) poll(id, token string) []Event {
 	if e := json.Unmarshal(w.Body.Bytes(), &out); e != nil {
 		f.t.Fatal(e)
 	}
+	for i := range out.Events {
+		e := &out.Events[i]
+		raw := f.req("GET", "/sessions/"+id+"/events/"+e.Delivery+"?attempt=1", strings.Repeat(token, 32), nil)
+		if raw.Code != 200 {
+			f.t.Fatalf("raw payload: %d", raw.Code)
+		}
+		e.Body = raw.Body.Bytes()
+	}
 	return out.Events
 }
 func TestRouteDedupeAckAndOriginalBytes(t *testing.T) {
@@ -99,14 +108,14 @@ func TestRouteDedupeAckAndOriginalBytes(t *testing.T) {
 	if len(es) != 1 || string(es[0].Body) != body {
 		t.Fatalf("payload changed: %+v", es)
 	}
-	f.req("POST", "/sessions/p_one/ack", strings.Repeat("t", 32), map[string]string{"delivery": "one"})
+	f.req("POST", "/sessions/p_one/ack", strings.Repeat("t", 32), map[string]any{"delivery": "one", "attempt": 1})
 	if len(f.poll("p_one", "t")) != 0 {
 		t.Fatal("ack failed")
 	}
 }
 func TestPinnedCommentsAndRename(t *testing.T) {
 	f := setup(t)
-	f.webhook(pr("dev/p_one/fix", false), "pull_request_review", "review")
+	f.webhook(pr("pepe/p_one/fix", false), "pull_request_review", "review")
 	f.webhook(pr("renamed", false), "pull_request", "rename")
 	f.webhook(`{"repository":{"id":1},"issue":{"number":42,"pull_request":{}}}`, "issue_comment", "comment")
 	f.webhook(`{"repository":{"id":1},"issue":{"number":42}}`, "issue_comment", "issue")
@@ -140,7 +149,7 @@ func TestIsolationRemovalAndClaim(t *testing.T) {
 	f := setup(t)
 	f.register("p_two", "x")
 	f.webhook(pr("pepe/p_one/fix", false), "pull_request", "one")
-	f.req("POST", "/sessions/p_two/ack", strings.Repeat("x", 32), map[string]string{"delivery": "one"})
+	f.req("POST", "/sessions/p_two/ack", strings.Repeat("x", 32), map[string]any{"delivery": "one", "attempt": 1})
 	if len(f.poll("p_one", "t")) != 1 {
 		t.Fatal("cross-session ack")
 	}
@@ -257,5 +266,115 @@ func TestOAuthDestinationIsBoundAtCreation(t *testing.T) {
 	w = f.req("GET", "/oauth/google/callback?state="+transaction["state"]+"&code=c", "", nil)
 	if !strings.HasPrefix(w.Header().Get("Location"), "https://workspace.example/") {
 		t.Fatal("transaction destination changed", w.Header())
+	}
+}
+
+func TestRawPayloadMetadataAndLegacyRemoval(t *testing.T) {
+	f := setup(t)
+	body := pr("pepe/p_one/fix", false)
+	f.webhook(body, "pull_request", "raw")
+	w := f.req("POST", "/sessions/p_one/poll", strings.Repeat("t", 32), struct{}{})
+	var out map[string][]map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out["events"][0]["body"]; ok {
+		t.Fatal("body must not be encoded in poll response")
+	}
+	w = f.req("GET", "/sessions/p_one/events/raw?attempt=1", strings.Repeat("t", 32), nil)
+	if w.Code != 200 || w.Body.String() != body || w.Header().Get("X-GitHub-Delivery") != "raw" || w.Header().Get("X-Pepe-Attempt") != "1" {
+		t.Fatal("raw response changed payload", w.Code, w.Header())
+	}
+	if f.req("GET", "/sessions/p_one/events/raw", strings.Repeat("x", 32), nil).Code != 401 {
+		t.Fatal("raw access unprotected")
+	}
+	f.register("p_two", "x")
+	if f.req("GET", "/sessions/p_two/events/raw", strings.Repeat("x", 32), nil).Code != 404 {
+		t.Fatal("cross-session payload access")
+	}
+	f.webhook(strings.Replace(pr("dev/p_one/fix", false), `"number":42`, `"number":43`, 1), "pull_request", "legacy")
+	if len(f.poll("p_one", "t")) != 1 {
+		t.Fatal("legacy prefix accepted")
+	}
+}
+func TestReplayAndStaleAcknowledgement(t *testing.T) {
+	f := setup(t)
+	f.webhook(pr("pepe/p_one/fix", false), "pull_request", "replay")
+	tok := strings.Repeat("t", 32)
+	if f.req("POST", "/sessions/p_one/ack", tok, map[string]any{"delivery": "replay", "attempt": 1}).Code != 200 {
+		t.Fatal("ack failed")
+	}
+	w := f.req("POST", "/sessions/p_one/replay", tok, map[string]string{"delivery": "replay"})
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body)
+	}
+	if f.req("POST", "/sessions/p_one/ack", tok, map[string]any{"delivery": "replay", "attempt": 1}).Code != 409 {
+		t.Fatal("stale ack cleared replay")
+	}
+	if f.req("GET", "/sessions/p_one/events/replay?attempt=1", tok, nil).Code != 409 {
+		t.Fatal("stale fetch accepted")
+	}
+	if f.req("GET", "/sessions/p_one/events/replay?attempt=2", tok, nil).Code != 200 {
+		t.Fatal("replay not fetchable")
+	}
+	if f.req("POST", "/sessions/p_one/ack", tok, map[string]any{"delivery": "replay", "attempt": 2}).Code != 200 {
+		t.Fatal("new ack failed")
+	}
+	f.register("p_two", "x")
+	if f.req("POST", "/sessions/p_two/replay", strings.Repeat("x", 32), map[string]string{"delivery": "replay"}).Code != 404 {
+		t.Fatal("cross-session replay accepted")
+	}
+}
+func TestUnclaimedReplayResolvesCurrentOwner(t *testing.T) {
+	f := setup(t)
+	tok := strings.Repeat("t", 32)
+	body := `{"repository":{"id":1},"issue":{"number":99,"pull_request":{"url":"https://example.com/pr"}}}`
+	f.webhook(body, "issue_comment", "unclaimed")
+	replay := func() *httptest.ResponseRecorder {
+		return f.req("POST", "/sessions/p_one/replay", tok, map[string]string{"delivery": "unclaimed"})
+	}
+	if replay().Code != 409 {
+		t.Fatal("unclaimed routed without ownership")
+	}
+	f.req("POST", "/sessions/p_one/claim", tok, map[string]int{"repo": 1, "pr": 99})
+	if w := replay(); w.Code != 200 {
+		t.Fatal(w.Code, w.Body)
+	}
+	w := f.req("GET", "/sessions/p_one/events/unclaimed?attempt=2", tok, nil)
+	if w.Code != 200 || w.Body.String() != body {
+		t.Fatal("replayed payload changed")
+	}
+	f.webhook(body, "issue_comment", "unclaimed")
+	var attempt int
+	if e := f.s.Store.QueryRow("SELECT attempt FROM events WHERE delivery='unclaimed'").Scan(&attempt); e != nil || attempt != 2 {
+		t.Fatal("upstream duplicate reset replay generation")
+	}
+}
+
+func TestV1MigrationPreservesQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(1);
+ CREATE TABLE events(delivery TEXT PRIMARY KEY,session TEXT,body BLOB NOT NULL,event TEXT NOT NULL,signature TEXT NOT NULL,ack INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL DEFAULT (unixepoch()));
+ INSERT INTO events(delivery,body,event,signature) VALUES('old',x'7b7d','issue_comment','sig');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	var version, attempt int
+	var body []byte
+	if err = migrated.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 2 {
+		t.Fatal(version, err)
+	}
+	if err = migrated.QueryRow("SELECT body,attempt FROM events WHERE delivery='old'").Scan(&body, &attempt); err != nil || attempt != 1 || string(body) != "{}" {
+		t.Fatal(attempt, string(body), err)
 	}
 }

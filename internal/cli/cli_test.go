@@ -106,3 +106,23 @@ func TestRequestDoesNotLeakTokenOnRedirect(t *testing.T) {
 		t.Fatal("redirect followed")
 	}
 }
+
+func TestFetchRawEvent(t *testing.T) {
+	body := []byte("{ \n \"a\":1 }")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/sessions/p_one/events/d" || r.URL.Query().Get("attempt") != "2" || r.Header.Get("Authorization") != "Bearer secret" {
+			t.Error("wrong raw request")
+		}
+		w.Header().Set("X-GitHub-Event", "issue_comment")
+		w.Header().Set("X-Hub-Signature-256", "sha256=sig")
+		w.Write(body)
+	}))
+	defer srv.Close()
+	e := relay.Event{Delivery: "d", Attempt: 2}
+	if err := fetchEvent(context.Background(), apiClient(), srv.URL, identity{ID: "p_one", Token: "secret"}, &e); err != nil {
+		t.Fatal(err)
+	}
+	if string(e.Body) != string(body) || e.Event != "issue_comment" || e.Signature != "sha256=sig" {
+		t.Fatal("raw payload changed")
+	}
+}

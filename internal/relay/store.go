@@ -42,9 +42,25 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	var v int
-	if err = d.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil || v != 1 {
+	if err = d.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil || (v != 1 && v != 2) {
 		d.Close()
 		return nil, fmt.Errorf("unsupported database schema %d: %v", v, err)
+	}
+	if v == 1 {
+		tx, e := d.Begin()
+		if e != nil {
+			d.Close()
+			return nil, e
+		}
+		if _, e = tx.Exec("ALTER TABLE events ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1; UPDATE schema_version SET version=2"); e != nil {
+			tx.Rollback()
+			d.Close()
+			return nil, e
+		}
+		if e = tx.Commit(); e != nil {
+			d.Close()
+			return nil, e
+		}
 	}
 	return &Store{d}, nil
 }

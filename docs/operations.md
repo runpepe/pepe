@@ -50,7 +50,7 @@ Uninstall leaves Caddy and its route in place so it cannot accidentally disturb 
 
 Stop the service before making a simple filesystem copy of the database. For online backups use SQLite's backup API or `VACUUM INTO`; do not copy only the main SQLite file while WAL writes are active.
 
-Automatic upgrade backups are retained next to the database. Store off-host backups separately. Events, including acknowledged and unclaimed events, have no automatic retention in v0.1. Monitor disk usage. Deleting acknowledged records also removes their deduplication history. Deleting a session removes all its routing and delivery state.
+Automatic upgrade backups are retained next to the database. Store off-host backups separately. Events, including acknowledged and unclaimed events, have no automatic retention in v0.2. Monitor disk usage. Deleting acknowledged records also removes their deduplication history. Deleting a session removes all its routing and delivery state.
 
 ## Release verification
 
@@ -71,10 +71,14 @@ No CI is required. Keep the signing key outside the repository. With Go installe
 ```sh
 go test -race ./...
 go vet ./...
-go run ./scripts/release v0.1.0 /private/path/to/signing-key
-git tag v0.1.0
-git push origin v0.1.0
-gh release create v0.1.0 dist/pepe_* dist/manifest.json dist/manifest.sig --title v0.1.0 --notes-file release-notes.md
+go run ./scripts/release v0.2.0 /private/path/to/signing-key
+git tag v0.2.0
+git push origin v0.2.0
+gh release create v0.2.0 dist/pepe_* dist/manifest.json dist/manifest.sig --title v0.2.0 --notes-file release-notes.md
 ```
 
 The release helper expects a base64-encoded 64-byte Ed25519 private key matching the embedded public key. It builds Linux/macOS on amd64/arm64 with CGO disabled, then signs a manifest of the exact binaries. Never commit or attach the private key. Pin and audit release dependencies before signing.
+
+## v0.2 upgrade notes
+
+v0.2 changes the wire protocol: poll returns metadata; payloads are fetched as raw HTTP bodies. Acknowledgements require `attempt`; replays increment it. Upgrade agents with the relay. `dev/` branch prefixes are no longer accepted. Existing pinned PR routes and stored events survive the upgrade. SQLite schema v2 adds the attempt counter transactionally, defaulting existing events to attempt 1. Back up before upgrading. Old binaries cannot directly open the migrated schema; use a matching pre-upgrade backup when rolling back to v0.1.

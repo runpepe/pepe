@@ -18,25 +18,31 @@ IDs contain 3–64 ASCII letters, digits, underscores or hyphens, beginning with
 
 `POST /github` accepts GitHub JSON and verifies `X-Hub-Signature-256` over the exact request bytes. Maximum body size is 5 MB. Supported events: `pull_request`, `pull_request_review`, `pull_request_review_comment`, and PR `issue_comment` events. Unsupported events return 202 without queueing.
 
-A branch `pepe/{session-id}/{branch}` establishes a route only when the PR head repository ID matches the event's repository ID. The legacy `dev/{session-id}/{branch}` prefix is also recognized. Existing PR bindings win over subsequent branch changes. No event is broadcast. A delivery ID is unique within the relay; duplicates are ignored.
+A branch `pepe/{session-id}/{branch}` establishes a route only when the PR head repository ID matches the event's repository ID. Legacy `dev/` prefixes are not recognized. Existing PR bindings win over subsequent branch changes. No event is broadcast. A delivery ID is unique within the relay; duplicates are ignored.
 
-`POST /sessions/{id}/poll` with the session token and `{}` returns at most ten pending events in arrival order:
+`POST /sessions/{id}/poll` with the session token and `{}` returns at most ten pending deliveries in arrival order. This is metadata only:
 
 ```json
-{"events":[{"delivery":"github-delivery-id","event":"pull_request","body":"BASE64_OF_ORIGINAL_BYTES","signature":"sha256=..."}]}
+{"events":[{"delivery":"github-delivery-id","event":"pull_request","signature":"sha256=...","attempt":1}]}
 ```
 
-The base64 representation preserves whitespace and exact bytes needed for signature verification. The agent decodes it before HTTP delivery.
+`GET /sessions/{id}/events/{delivery-id}?attempt=1` with the session token returns the **exact original upstream bytes as the HTTP response body**, with `Content-Type: application/json`. There is no envelope, base64 encoding, or JSON reserialization. URL-encode the delivery ID. Response headers include `X-GitHub-Delivery`, `X-GitHub-Event`, `X-Hub-Signature-256`, and `X-Pepe-Attempt`. A stale attempt returns 409. Another session cannot fetch the event.
 
-`POST /sessions/{id}/ack` with `{"delivery":"github-delivery-id"}` acknowledges only that session's event. Acknowledged records remain for deduplication. Polling does not lease messages: run one agent per identity; concurrent agents can deliver duplicates.
+Forward these bytes unchanged to your application's webhook endpoint. The bundled agent forwards the upstream headers plus `X-Pepe-Attempt`; it can optionally re-sign the unchanged body using `PEPE_LOCAL_WEBHOOK_SECRET` when your application uses a different secret.
 
-`POST /sessions/{id}/claim` with `{"repo":123456,"pr":42}` pins a PR explicitly. A claim cannot replace another session's binding. This is an operator-trusted API, not a GitHub permission check. It affects future events. Unclaimed records remain unclaimed; inspect or redeliver them from GitHub after establishing ownership.
+`POST /sessions/{id}/ack` with `{"delivery":"github-delivery-id","attempt":1}` acknowledges only that session's current attempt. A stale or mismatched attempt returns 409. Acknowledged records remain available for deduplication and explicit replay. Polling does not lease messages: run one agent per identity; concurrent agents can deliver duplicates.
+
+`POST /sessions/{id}/replay` with `{"delivery":"github-delivery-id"}` requeues the saved payload. The response includes `delivery`, the incremented `attempt`, and `queued: true`. The upstream delivery ID and raw bytes remain unchanged. The same workspace must own the event. For an unclaimed event, Pepe reevaluates routing from the stored payload; a current route to the requesting workspace is required. Use `claim` first if necessary. Missing/other-owner deliveries return 404; an unresolved route returns 409. Upstream redeliveries still deduplicate; explicit replay is how to request another delivery attempt.
+
+Consumers should deduplicate `(X-GitHub-Delivery, X-Pepe-Attempt)` after successful processing, and maintain idempotent business operations. Ordinary retries use the same attempt. Explicit replay creates a new attempt and may intentionally reprocess an event.
+
+`POST /sessions/{id}/claim` with `{"repo":123456,"pr":42}` pins a PR explicitly. A claim cannot replace another session's binding. This is an operator-trusted API, not a GitHub permission check. It does not automatically dispatch old events. Replay a stored unclaimed delivery after establishing ownership.
 
 `POST /status` with the admin token returns session, pending-delivery, and unclaimed-delivery counts. `GET /healthz` checks database connectivity.
 
 ## OAuth
 
-Only Google query-mode authorization-code callbacks are supported initially.
+Only Google query-mode authorization-code callbacks are supported. Legacy Doomer signed routing-state payloads are not supported.
 
 1. Your app generates and stores its usual state and PKCE verifier, if applicable.
 2. From the app's backend, call `POST /sessions/{id}/oauth` using the session token:

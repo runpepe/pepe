@@ -75,7 +75,7 @@ pepe claim --repo 12345678 --pr 42
 pepe status
 ```
 
-`--repo` is GitHub's numeric repository ID, not `owner/name`. Claiming cannot overwrite another workspace's binding. Unclaimed deliveries are counted and retained for inspection in SQLite; a claim affects future deliveries, not previously unclaimed events.
+`--repo` is GitHub's numeric repository ID, not `owner/name`. Claiming cannot overwrite another workspace's binding. Unclaimed deliveries are retained. After establishing ownership, use `pepe replay --delivery <delivery-id>` to route a stored event to its current owner. A claim by itself does not dispatch old events.
 
 Configure your GitHub App or repository webhook:
 
@@ -84,7 +84,7 @@ Configure your GitHub App or repository webhook:
 - Secret: the relay's `webhook_secret`
 - Events: pull requests, pull request reviews, pull request review comments, and issue comments
 
-Pepe verifies GitHub's signature and preserves payload bytes, delivery IDs, and event names. By default it forwards the original signature. If your local app uses a different secret, set `PEPE_LOCAL_WEBHOOK_SECRET`; the agent re-signs the original bytes with that secret. Only a successful local 2xx response acknowledges a delivery. Delivery is **at least once**; your app must deduplicate `X-GitHub-Delivery`.
+Pepe verifies GitHub's signature and preserves payload bytes, delivery IDs, and event names. By default it forwards the original signature. If your local app uses a different secret, set `PEPE_LOCAL_WEBHOOK_SECRET`; the agent re-signs the original bytes with that secret. Only a successful local 2xx response acknowledges a delivery. Delivery is **at least once** within each attempt. Your app should deduplicate `(X-GitHub-Delivery, X-Pepe-Attempt)` and keep business operations idempotent. Automatic retries keep the same attempt; an explicit replay increments it.
 
 ## Route Google OAuth callbacks
 
@@ -105,16 +105,24 @@ OAuth requires this application integration; `pepe run` alone cannot intercept y
 ```sh
 pepe upgrade --check
 sudo pepe upgrade
-sudo pepe upgrade --version v0.1.0
+sudo pepe upgrade --version v0.2.0
 ```
 
 Upgrades verify an Ed25519-signed release manifest and binary checksum. On an installed Linux relay, Pepe stops the service, backs up SQLite, replaces the executable, and verifies health. Failed startup triggers restoration of the prior binary and database. Configuration and Caddy remain independent. Package-manager installations should be upgraded through their package manager.
 
-## Scope of v0.1
+## Replay a stored delivery
 
-This is a self-hosted, single-operator relay. Anyone holding its admin token is trusted to register workspaces and inspect queue counts. Use separate relay instances and secrets for mutually untrusted teams. Project-scoped membership, a hosted service, a browser inspector, webhook replay commands, generic provider plugins, automatic retention, and a public tunnel are not implemented.
+```sh
+pepe replay --delivery <upstream-delivery-id>
+```
 
-The initial routing behavior is adapted from the Doomer development router, with portable workspace IDs and opaque, single-use OAuth transactions. It does not migrate a running Doomer router or alter its deployment. There is no CI yet.
+Pepe requeues the saved bytes without asking GitHub to resend. Already routed events retain their owner. An unclaimed event must resolve to this workspace under current routing rules (use `pepe claim` first if needed). Replays preserve the upstream delivery ID and increment `X-Pepe-Attempt`. Acknowledgements for older attempts cannot clear the replay.
+
+## Scope of v0.2
+
+This is a self-hosted, single-operator relay. Anyone holding its admin token is trusted to register workspaces and inspect queue counts. Use separate relay instances and secrets for mutually untrusted teams. Project-scoped membership, a hosted service, a browser inspector, generic provider plugins, automatic retention, and a public tunnel are not implemented.
+
+The initial routing behavior is adapted from the Doomer development router, with portable workspace IDs and opaque, single-use OAuth transactions. Only `pepe/<session-id>/<branch>` establishes a route; legacy `dev/` prefixes are not supported. Polling returns metadata, and a separate authenticated endpoint returns the exact original payload as its HTTP body. It does not migrate a running Doomer router or alter its deployment. There is no CI yet.
 
 ## Development
 

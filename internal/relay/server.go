@@ -12,12 +12,13 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$`)
-var branchPattern = regexp.MustCompile(`^(?:pepe|dev)/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})/.+$`)
+var branchPattern = regexp.MustCompile(`^pepe/([a-zA-Z0-9][a-zA-Z0-9_-]{2,63})/.+$`)
 
 type Server struct {
 	Store                                *Store
@@ -26,7 +27,8 @@ type Server struct {
 }
 type Event struct {
 	Delivery  string `json:"delivery"`
-	Body      []byte `json:"body"`
+	Body      []byte `json:"-"`
+	Attempt   int64  `json:"attempt"`
 	Event     string `json:"event"`
 	Signature string `json:"signature"`
 }
@@ -94,6 +96,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.callback(w, r)
 		return
 	}
+	if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/sessions/") {
+		s.rawEvent(w, r)
+		return
+	}
 	if r.Method != "POST" {
 		fail(w, 404, "not found")
 		return
@@ -149,15 +155,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "ack":
 		var data struct {
 			Delivery string `json:"delivery"`
+			Attempt  int64  `json:"attempt"`
 		}
 		if !decode(w, r, &data) {
 			return
 		}
-		if _, err = s.Store.Exec("UPDATE events SET ack=1 WHERE session=? AND delivery=?", id, data.Delivery); err != nil {
+		if data.Attempt < 1 {
+			fail(w, 400, "positive attempt required")
+			return
+		}
+		result, err := s.Store.Exec("UPDATE events SET ack=1 WHERE session=? AND delivery=? AND attempt=?", id, data.Delivery, data.Attempt)
+		if err != nil {
 			fail(w, 500, "database error")
 			return
 		}
+		n, _ := result.RowsAffected()
+		if n == 0 {
+			fail(w, 409, "delivery attempt no longer current")
+			return
+		}
 		reply(w, 200, map[string]bool{"ok": true})
+	case "replay":
+		s.replay(w, r, id)
 	case "claim":
 		s.claim(w, r, id)
 	case "oauth":
@@ -318,7 +337,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	reply(w, 202, map[string]bool{"queued": id != "", "unclaimed": id == ""})
 }
 func (s *Server) poll(w http.ResponseWriter, id string) {
-	rows, err := s.Store.Query("SELECT delivery,body,event,signature FROM events WHERE session=? AND ack=0 ORDER BY rowid LIMIT 10", id)
+	rows, err := s.Store.Query("SELECT delivery,event,signature,attempt FROM events WHERE session=? AND ack=0 ORDER BY rowid LIMIT 10", id)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -327,7 +346,7 @@ func (s *Server) poll(w http.ResponseWriter, id string) {
 	events := []Event{}
 	for rows.Next() {
 		var e Event
-		if err = rows.Scan(&e.Delivery, &e.Body, &e.Event, &e.Signature); err != nil {
+		if err = rows.Scan(&e.Delivery, &e.Event, &e.Signature, &e.Attempt); err != nil {
 			fail(w, 500, "database error")
 			return
 		}
@@ -452,4 +471,95 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	http.Redirect(w, r, target.String(), 302)
+}
+
+// rawEvent returns the exact upstream bytes, never a JSON envelope.
+func (s *Server) rawEvent(w http.ResponseWriter, r *http.Request) {
+	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 4)
+	if len(parts) != 4 || parts[0] != "sessions" || parts[2] != "events" || !idPattern.MatchString(parts[1]) {
+		fail(w, 404, "not found")
+		return
+	}
+	id, delivery := parts[1], parts[3]
+	var hash string
+	if err := s.Store.QueryRow("SELECT token_hash FROM sessions WHERE id=?", id).Scan(&hash); err != nil || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !hmac.Equal([]byte(hash), []byte(Hash(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))) {
+		fail(w, 401, "unauthorized")
+		return
+	}
+	var body []byte
+	var event, signature string
+	var attempt int64
+	err := s.Store.QueryRow("SELECT body,event,signature,attempt FROM events WHERE session=? AND delivery=?", id, delivery).Scan(&body, &event, &signature, &attempt)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, 404, "not found")
+		return
+	}
+	if err != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	if v := r.URL.Query().Get("attempt"); v != "" && v != strconv.FormatInt(attempt, 10) {
+		fail(w, 409, "delivery attempt no longer current")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-GitHub-Delivery", delivery)
+	w.Header().Set("X-GitHub-Event", event)
+	w.Header().Set("X-Hub-Signature-256", signature)
+	w.Header().Set("X-Pepe-Attempt", strconv.FormatInt(attempt, 10))
+	w.WriteHeader(200)
+	_, _ = w.Write(body)
+}
+func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) {
+	var data struct {
+		Delivery string `json:"delivery"`
+	}
+	if !decode(w, r, &data) {
+		return
+	}
+	tx, err := s.Store.Begin()
+	if err != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	defer tx.Rollback()
+	var owner sql.NullString
+	var body []byte
+	err = tx.QueryRow("SELECT session,body FROM events WHERE delivery=?", data.Delivery).Scan(&owner, &body)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && owner.Valid && owner.String != id) {
+		fail(w, 404, "not found")
+		return
+	}
+	if err != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	if !owner.Valid {
+		var p githubPayload
+		if json.Unmarshal(body, &p) != nil {
+			fail(w, 500, "invalid stored payload")
+			return
+		}
+		target, e := route(tx, p)
+		if e != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		if target != id {
+			fail(w, 409, "delivery has no route to this session; claim its PR first")
+			return
+		}
+	}
+	var attempt int64
+	err = tx.QueryRow("UPDATE events SET session=?,ack=0,attempt=attempt+1 WHERE delivery=? RETURNING attempt", id, data.Delivery).Scan(&attempt)
+	if err != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	if tx.Commit() != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	reply(w, 200, map[string]any{"delivery": data.Delivery, "attempt": attempt, "queued": true})
 }
