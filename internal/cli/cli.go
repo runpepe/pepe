@@ -75,7 +75,7 @@ func help() {
   pepe claim      Bind a repository ID and PR to this workspace
   pepe install    Install a Linux systemd relay; optionally configure Caddy
   pepe uninstall  Remove the service; preserve state unless --purge
-  pepe upgrade    Verify and install an official signed release
+  pepe upgrade    Install an explicitly supplied development build
   pepe version    Print version
 
 Use pepe <command> --help for options. https://runpepe.dev

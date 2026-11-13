@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -348,33 +347,5 @@ func TestUnclaimedReplayResolvesCurrentOwner(t *testing.T) {
 	var attempt int
 	if e := f.s.Store.QueryRow("SELECT attempt FROM events WHERE delivery='unclaimed'").Scan(&attempt); e != nil || attempt != 2 {
 		t.Fatal("upstream duplicate reset replay generation")
-	}
-}
-
-func TestV1MigrationPreservesQueue(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "old.sqlite")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(1);
- CREATE TABLE events(delivery TEXT PRIMARY KEY,session TEXT,body BLOB NOT NULL,event TEXT NOT NULL,signature TEXT NOT NULL,ack INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL DEFAULT (unixepoch()));
- INSERT INTO events(delivery,body,event,signature) VALUES('old',x'7b7d','issue_comment','sig');`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	migrated, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer migrated.Close()
-	var version, attempt int
-	var body []byte
-	if err = migrated.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 2 {
-		t.Fatal(version, err)
-	}
-	if err = migrated.QueryRow("SELECT body,attempt FROM events WHERE delivery='old'").Scan(&body, &attempt); err != nil || attempt != 1 || string(body) != "{}" {
-		t.Fatal(attempt, string(body), err)
 	}
 }

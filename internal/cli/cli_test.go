@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -85,14 +84,6 @@ func TestInstallDryRunAndValidation(t *testing.T) {
 	}
 	if e := install([]string{"--public-url", "https://example.com/path", "--dry-run"}); e == nil {
 		t.Fatal("path accepted")
-	}
-}
-func TestManifestRejectsUnsignedAndTampered(t *testing.T) {
-	if _, e := verifyManifest([]byte(`{"version":"v0.1.0"}`), make([]byte, ed25519.SignatureSize), "v0.1.0"); e == nil {
-		t.Fatal("unsigned accepted")
-	}
-	if _, e := verifyManifest([]byte("bad"), []byte("bad"), "v0.1.0"); e == nil {
-		t.Fatal("malformed accepted")
 	}
 }
 func TestRequestDoesNotLeakTokenOnRedirect(t *testing.T) {

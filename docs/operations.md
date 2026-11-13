@@ -50,35 +50,12 @@ Uninstall leaves Caddy and its route in place so it cannot accidentally disturb 
 
 Stop the service before making a simple filesystem copy of the database. For online backups use SQLite's backup API or `VACUUM INTO`; do not copy only the main SQLite file while WAL writes are active.
 
-Automatic upgrade backups are retained next to the database. Store off-host backups separately. Events, including acknowledged and unclaimed events, have no automatic retention in v0.2. Monitor disk usage. Deleting acknowledged records also removes their deduplication history. Deleting a session removes all its routing and delivery state.
+Automatic upgrade backups are retained next to the database. Store off-host backups separately. Events, including acknowledged and unclaimed events, have no automatic retention during development. Monitor disk usage. Deleting acknowledged records also removes their deduplication history. Deleting a session removes all its routing and delivery state.
 
-## Release verification
+## Development versions and updates
 
-Official release assets are plain executables, plus `manifest.json` and its raw Ed25519 signature `manifest.sig`. The signed manifest binds a version and SHA-256 digest to each platform binary. `pepe upgrade` embeds this public key:
+Pepe is v0.0 and pre-release. Do not create tags or publish releases until the maintainer explicitly authorizes v0.1. Track builds by source commit; no backward compatibility is promised for the API or SQLite schema.
 
-```text
-Pb/DI60gEUsD/KSlfSnSlSwix84CU5a99EiHt2dL32k=
-```
+Build current source and pass the resulting executable to `pepe upgrade --binary /path/to/pepe`. `--check` inspects the candidate without replacing the installation. No binary is downloaded automatically. Use only builds you trust.
 
-The public key is the base64-encoded 32-byte Ed25519 public key. Verify the raw manifest bytes against `manifest.sig`, then compare the selected executable's SHA-256 with the signed entry. Bootstrap trust comes from obtaining the initial binary or source from a trusted channel. Later upgrades require both a valid signature and matching binary hash.
-
-`pepe upgrade --check` verifies the manifest without replacing anything. `--version vX.Y.Z` selects an explicit stable version, including a deliberate downgrade. Database schema support still applies; keep backups. For service upgrades, Pepe stops traffic before backup and migration; OAuth requests can fail during this short downtime and should be restarted by the user. Queued webhooks survive. A failed new service restores the previous executable and pre-upgrade database before restarting.
-
-## Publishing a release
-
-No CI is required. Keep the signing key outside the repository. With Go installed:
-
-```sh
-go test -race ./...
-go vet ./...
-go run ./scripts/release v0.2.0 /private/path/to/signing-key
-git tag v0.2.0
-git push origin v0.2.0
-gh release create v0.2.0 dist/pepe_* dist/manifest.json dist/manifest.sig --title v0.2.0 --notes-file release-notes.md
-```
-
-The release helper expects a base64-encoded 64-byte Ed25519 private key matching the embedded public key. It builds Linux/macOS on amd64/arm64 with CGO disabled, then signs a manifest of the exact binaries. Never commit or attach the private key. Pin and audit release dependencies before signing.
-
-## v0.2 upgrade notes
-
-v0.2 changes the wire protocol: poll returns metadata; payloads are fetched as raw HTTP bodies. Acknowledgements require `attempt`; replays increment it. Upgrade agents with the relay. `dev/` branch prefixes are no longer accepted. Existing pinned PR routes and stored events survive the upgrade. SQLite schema v2 adds the attempt counter transactionally, defaulting existing events to attempt 1. Back up before upgrading. Old binaries cannot directly open the migrated schema; use a matching pre-upgrade backup when rolling back to v0.1.
+Installed service updates retain a database backup, replace the executable atomically, restart the service, and verify health. Caddy and configuration are preserved. Development schema changes may require a deliberate state reset; no migration framework is maintained yet.

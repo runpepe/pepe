@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"fmt"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
@@ -29,38 +28,16 @@ func Open(path string) (*Store, error) {
 	}
 	d.SetMaxOpenConns(1)
 	_, err = d.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
- CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
- INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+
  CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, callback TEXT NOT NULL DEFAULT '');
  CREATE TABLE IF NOT EXISTS routes (repo INTEGER NOT NULL, pr INTEGER NOT NULL, session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, PRIMARY KEY(repo,pr));
- CREATE TABLE IF NOT EXISTS events (delivery TEXT PRIMARY KEY, session TEXT REFERENCES sessions(id) ON DELETE CASCADE, body BLOB NOT NULL, event TEXT NOT NULL, signature TEXT NOT NULL, ack INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT (unixepoch()));
+ CREATE TABLE IF NOT EXISTS events (delivery TEXT PRIMARY KEY, session TEXT REFERENCES sessions(id) ON DELETE CASCADE, body BLOB NOT NULL, event TEXT NOT NULL, signature TEXT NOT NULL, ack INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT (unixepoch()), attempt INTEGER NOT NULL DEFAULT 1);
  CREATE INDEX IF NOT EXISTS events_pending ON events(session,ack);
  CREATE TABLE IF NOT EXISTS oauth (state_hash TEXT PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, provider TEXT NOT NULL, original_state TEXT NOT NULL, callback TEXT NOT NULL, expires INTEGER NOT NULL);
  `)
 	if err != nil {
 		d.Close()
 		return nil, err
-	}
-	var v int
-	if err = d.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil || (v != 1 && v != 2) {
-		d.Close()
-		return nil, fmt.Errorf("unsupported database schema %d: %v", v, err)
-	}
-	if v == 1 {
-		tx, e := d.Begin()
-		if e != nil {
-			d.Close()
-			return nil, e
-		}
-		if _, e = tx.Exec("ALTER TABLE events ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1; UPDATE schema_version SET version=2"); e != nil {
-			tx.Rollback()
-			d.Close()
-			return nil, e
-		}
-		if e = tx.Commit(); e != nil {
-			d.Close()
-			return nil, e
-		}
 	}
 	return &Store{d}, nil
 }

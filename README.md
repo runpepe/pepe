@@ -13,14 +13,12 @@ Pepe is one Go binary with two roles:
 
 The relay remembers which workspace owns each PR. Comments and reviews follow that binding. Offline workspaces keep their queued events; restarting the relay preserves state.
 
-## Install the binary
+## Build the development version
 
-Download `pepe_<os>_<arch>` from [Releases](https://github.com/marccampbell/pepe/releases), make it executable, and place it on your PATH as `pepe`. Releases include Linux and macOS binaries for amd64 and arm64; no additional runtime is required. See [release verification](docs/operations.md#release-verification).
-
-Or build with Go 1.25 or newer:
+Pepe is **v0.0, pre-release**. There are no published releases or version tags. The API and storage schema may change without backward compatibility. Build current source with Go 1.25 or newer:
 
 ```sh
-go install github.com/marccampbell/pepe/cmd/pepe@latest
+go install github.com/marccampbell/pepe/cmd/pepe@main
 ```
 
 ## Start a relay
@@ -100,15 +98,16 @@ Your app still validates its state cookie and exchanges the code using the **sam
 
 OAuth requires this application integration; `pepe run` alone cannot intercept your login flow. A browser must be able to reach the workspace callback. Pepe does not currently provide a public HTTP tunnel. A localhost callback works only for a browser on that same machine.
 
-## Upgrade
+## Update a development installation
+
+Build the desired source commit for the target platform, then supply that executable explicitly:
 
 ```sh
-pepe upgrade --check
-sudo pepe upgrade
-sudo pepe upgrade --version v0.2.0
+pepe upgrade --binary /path/to/pepe --check
+sudo pepe upgrade --binary /path/to/pepe
 ```
 
-Upgrades verify an Ed25519-signed release manifest and binary checksum. On an installed Linux relay, Pepe stops the service, backs up SQLite, replaces the executable, and verifies health. Failed startup triggers restoration of the prior binary and database. Configuration and Caddy remain independent. Package-manager installations should be upgraded through their package manager.
+For an installed Linux relay, the updater backs up SQLite, replaces the executable, restarts the service, and checks health. There is no release lookup or download channel. Configuration and Caddy remain independent.
 
 ## Replay a stored delivery
 
@@ -118,7 +117,7 @@ pepe replay --delivery <upstream-delivery-id>
 
 Pepe requeues the saved bytes without asking GitHub to resend. Already routed events retain their owner. An unclaimed event must resolve to this workspace under current routing rules (use `pepe claim` first if needed). Replays preserve the upstream delivery ID and increment `X-Pepe-Attempt`. Acknowledgements for older attempts cannot clear the replay.
 
-## Scope of v0.2
+## Current scope
 
 This is a self-hosted, single-operator relay. Anyone holding its admin token is trusted to register workspaces and inspect queue counts. Use separate relay instances and secrets for mutually untrusted teams. Project-scoped membership, a hosted service, a browser inspector, generic provider plugins, automatic retention, and a public tunnel are not implemented.
 
@@ -132,6 +131,6 @@ go vet ./...
 go build -o pepe ./cmd/pepe
 ```
 
-Tests cover signature validation, exact payload preservation, routing, deduplication, acknowledgements, isolation, persistence, OAuth expiry/replay protection, local forwarding failures, installer planning, and release verification rejection.
+Tests cover signature validation, exact payload preservation, routing, deduplication, acknowledgements, isolation, persistence, OAuth expiry/replay protection, local forwarding failures, installer planning, and raw delivery retrieval.
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

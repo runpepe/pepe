@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-var version = "dev"
+var version = "v0.0.0-dev"
 
 func main() {
 	if err := cli.Run(os.Args[1:], version); err != nil {

@@ -1,104 +1,50 @@
 package cli
 
 import (
-	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/marccampbell/pepe/internal/relay"
-	"io"
-	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
+	"strings"
 	"time"
 )
 
-const releasePublicKey = "Pb/DI60gEUsD/KSlfSnSlSwix84CU5a99EiHt2dL32k="
-const releases = "https://github.com/marccampbell/pepe/releases/download/"
-
-type manifest struct {
-	Version string            `json:"version"`
-	Files   map[string]string `json:"files"`
-}
-
-func fetch(url string, limit int64) ([]byte, error) {
-	c := &http.Client{Timeout: 2 * time.Minute}
-	r, err := c.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Body.Close()
-	if r.StatusCode != 200 {
-		return nil, fmt.Errorf("download returned HTTP %d", r.StatusCode)
-	}
-	b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
-	if int64(len(b)) > limit {
-		return nil, errors.New("download exceeds size limit")
-	}
-	return b, err
-}
-func verifyManifest(raw, sig []byte, version string) (manifest, error) {
-	var m manifest
-	key, _ := base64.StdEncoding.DecodeString(releasePublicKey)
-	if !ed25519.Verify(ed25519.PublicKey(key), raw, sig) {
-		return m, errors.New("invalid release signature")
-	}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return m, err
-	}
-	if m.Version != version {
-		return m, errors.New("release version mismatch")
-	}
-	return m, nil
-}
+// Development upgrades use an explicitly supplied build, not published releases.
 func upgrade(args []string, current string) error {
 	f := flags("upgrade")
-	version := f.String("version", "", "release version (default: latest stable)")
-	check := f.Bool("check", false, "check without installing")
+	binary := f.String("binary", "", "path to a locally built Pepe executable")
+	check := f.Bool("check", false, "inspect the supplied development build without installing")
 	if err := parse(f, args); err != nil {
 		return err
 	}
-	if *version == "" {
-		b, err := fetch("https://api.github.com/repos/marccampbell/pepe/releases/latest", 1<<20)
-		if err != nil {
-			return err
+	if *binary == "" {
+		if *check {
+			fmt.Printf("Installed: %s; development builds only, no release channel\n", current)
+			return nil
 		}
-		var v struct {
-			Tag string `json:"tag_name"`
-		}
-		if err = json.Unmarshal(b, &v); err != nil {
-			return err
-		}
-		*version = v.Tag
+		return errors.New("Pepe is pre-release; supply --binary /path/to/a/source-build")
 	}
-	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(*version) {
-		return errors.New("expected stable version vMAJOR.MINOR.PATCH")
-	}
-	base := releases + *version + "/"
-	raw, err := fetch(base+"manifest.json", 1<<20)
+	candidate, err := filepath.Abs(*binary)
 	if err != nil {
 		return err
 	}
-	sig, err := fetch(base+"manifest.sig", 1024)
+	info, err := os.Stat(candidate)
 	if err != nil {
 		return err
 	}
-	m, err := verifyManifest(raw, sig, *version)
+	if !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+		return errors.New("binary must be a regular executable")
+	}
+	out, err := exec.Command(candidate, "version").Output()
 	if err != nil {
-		return err
+		return fmt.Errorf("candidate version check: %w", err)
 	}
-	name := "pepe_" + runtime.GOOS + "_" + runtime.GOARCH
-	expected, ok := m.Files[name]
-	if !ok {
-		return errors.New("release does not support this platform")
-	}
-	fmt.Printf("Installed: %s; release: %s\n", current, m.Version)
-	if *check || current == m.Version {
+	candidateVersion := strings.TrimSpace(string(out))
+	fmt.Printf("Installed: %s; candidate: %s\n", current, candidateVersion)
+	if *check {
 		return nil
 	}
 	exe, err := os.Executable()
@@ -109,16 +55,9 @@ func upgrade(args []string, current string) error {
 	if err != nil {
 		return err
 	}
-	if filepath.Base(filepath.Dir(exe)) == "bin" && filepath.Dir(exe) != "/usr/local/bin" {
-		return errors.New("this installation may be package-managed; upgrade with your package manager")
-	}
-	b, err := fetch(base+name, 200<<20)
+	b, err := os.ReadFile(candidate)
 	if err != nil {
 		return err
-	}
-	sum := sha256.Sum256(b)
-	if hex.EncodeToString(sum[:]) != expected {
-		return errors.New("binary checksum mismatch")
 	}
 	old, err := os.ReadFile(exe)
 	if err != nil {
@@ -194,7 +133,7 @@ func upgrade(args []string, current string) error {
 			return fmt.Errorf("upgrade failed and previous binary/database restored: %w", err)
 		}
 	}
-	fmt.Printf("Upgraded to %s\n", m.Version)
+	fmt.Printf("Upgraded to %s\n", candidateVersion)
 	if backup != "" {
 		fmt.Printf("Database backup: %s\n", backup)
 	}
