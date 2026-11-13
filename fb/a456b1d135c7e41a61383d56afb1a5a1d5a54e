@@ -1,0 +1,26 @@
+AGENTS.md
+  h_aa44c3b5b60dec 1-8
+README.md
+  h_aa44c3b5b60dec 16,18,21,101-103,106-107,110,120,134
+cmd/pepe/main.go
+  h_aa44c3b5b60dec 9
+docs/operations.md
+  h_aa44c3b5b60dec 53,55,57,59,61
+internal/cli/cli.go
+  h_aa44c3b5b60dec 78
+internal/cli/upgrade.go
+  h_aa44c3b5b60dec 8,11,15,18-19,23-26,28,30,34,38-39,41-43,45-47,58,136
+internal/relay/store.go
+  h_aa44c3b5b60dec 31,34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fba456b1d135c7e41a61383d56afb1a5a1d5a54e",
+  "prompts": {},
+  "humans": {
+    "h_aa44c3b5b60dec": {
+      "author": "Marc Campbell <marc.e.campbell@gmail.com>"
+    }
+  }
+}
