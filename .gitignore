@@ -1,0 +1,5 @@
+/dist/
+/pepe
+*.sqlite*
+.env
+.pepe/
