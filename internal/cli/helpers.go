@@ -2,7 +2,7 @@ package cli
 
 import (
 	"fmt"
-	"github.com/marccampbell/pepe/internal/relay"
+	"github.com/runpepe/pepe/internal/relay"
 	"net/http"
 	"time"
 )

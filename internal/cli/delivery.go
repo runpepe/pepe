@@ -7,7 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/marccampbell/pepe/internal/relay"
+	"github.com/runpepe/pepe/internal/relay"
 	"io"
 	"net/http"
 	"net/url"

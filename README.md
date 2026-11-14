@@ -18,7 +18,7 @@ The relay remembers which workspace owns each PR. Comments and reviews follow th
 Pepe is **v0.0, pre-release**. There are no published releases or version tags. The API and storage schema may change without backward compatibility. Build current source with Go 1.25 or newer:
 
 ```sh
-go install github.com/marccampbell/pepe/cmd/pepe@main
+go install github.com/runpepe/pepe/cmd/pepe@main
 ```
 
 ## Start a relay

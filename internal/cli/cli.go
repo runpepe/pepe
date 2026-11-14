@@ -7,7 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/marccampbell/pepe/internal/relay"
+	"github.com/runpepe/pepe/internal/relay"
 	"io"
 	"log"
 	"net/http"

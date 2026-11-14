@@ -3,7 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"github.com/marccampbell/pepe/internal/relay"
+	"github.com/runpepe/pepe/internal/relay"
 	"os"
 	"os/exec"
 	"path/filepath"

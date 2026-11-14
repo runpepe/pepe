@@ -1,4 +1,4 @@
-module github.com/marccampbell/pepe
+module github.com/runpepe/pepe
 
 go 1.25.0
 

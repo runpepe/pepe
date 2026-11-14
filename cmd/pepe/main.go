@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/marccampbell/pepe/internal/cli"
+	"github.com/runpepe/pepe/internal/cli"
 	"os"
 )
 

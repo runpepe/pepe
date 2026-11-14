@@ -5,7 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"github.com/marccampbell/pepe/internal/relay"
+	"github.com/runpepe/pepe/internal/relay"
 	"net/http"
 	"net/http/httptest"
 	"os"
