@@ -1,0 +1,29 @@
+apiVersion: schemas.schemahero.io/v1alpha4
+kind: Table
+metadata:
+  name: pepe_sessions
+spec:
+  database: pepe
+  name: pepe_sessions
+  schema:
+    postgres:
+      primaryKey: [namespace, id]
+      columns:
+        - name: namespace
+          type: text
+          constraints:
+            notNull: true
+          default: "default"
+        - name: id
+          type: text
+          constraints:
+            notNull: true
+        - name: token_hash
+          type: text
+          constraints:
+            notNull: true
+        - name: callback
+          type: text
+          constraints:
+            notNull: true
+          default: ""

@@ -84,6 +84,9 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if s.namespaceRequest(w, r) {
+		return
+	}
 	if r.Method == "GET" && r.URL.Path == "/healthz" {
 		if s.Store.Ping() != nil {
 			fail(w, 503, "database unavailable")
@@ -97,6 +100,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/sessions/") {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) == 3 && parts[2] == "activity" && idPattern.MatchString(parts[1]) {
+			s.activity(w, r, parts[1])
+			return
+		}
 		s.rawEvent(w, r)
 		return
 	}
@@ -118,7 +126,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var sessions, pending, unclaimed int
-		if err := s.Store.QueryRow("SELECT (SELECT count(*) FROM sessions),(SELECT count(*) FROM events WHERE ack=0 AND session IS NOT NULL),(SELECT count(*) FROM events WHERE session IS NULL)").Scan(&sessions, &pending, &unclaimed); err != nil {
+		if err := s.Store.QueryRow("SELECT (SELECT count(*) FROM sessions WHERE namespace=?),(SELECT count(*) FROM events WHERE namespace=? AND ack=0 AND session IS NOT NULL),(SELECT count(*) FROM events WHERE namespace=? AND session IS NULL)", s.Store.namespace, s.Store.namespace, s.Store.namespace).Scan(&sessions, &pending, &unclaimed); err != nil {
 			fail(w, 500, "database error")
 			return
 		}
@@ -131,12 +139,76 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, action := parts[1], parts[2]
+	if action == "activity" {
+		s.activity(w, r, id)
+		return
+	}
+	if action == "disconnect-google" {
+		if !auth(r, s.AdminToken) {
+			fail(w, 401, "unauthorized")
+			return
+		}
+		tx, err := s.Store.Begin()
+		if err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		defer tx.Rollback()
+		if _, err = tx.Exec("UPDATE sessions SET callback='' WHERE namespace=? AND id=?", s.Store.namespace, id); err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		if _, err = tx.Exec("DELETE FROM oauth WHERE namespace=? AND session=?", s.Store.namespace, id); err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		if tx.Commit() != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		reply(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	if action == "info" {
+		if !auth(r, s.AdminToken) {
+			fail(w, 401, "unauthorized")
+			return
+		}
+		var callback string
+		err := s.Store.QueryRow("SELECT callback FROM sessions WHERE namespace=? AND id=?", s.Store.namespace, id).Scan(&callback)
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, 404, "session not found")
+			return
+		}
+		if err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		reply(w, 200, map[string]string{"id": id, "callback": callback})
+		return
+	}
 	if action == "remove" {
 		if !auth(r, s.AdminToken) {
 			fail(w, 401, "unauthorized")
 			return
 		}
-		if _, err := s.Store.Exec("DELETE FROM sessions WHERE id=?", id); err != nil {
+		tx, err := s.Store.Begin()
+		if err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		defer tx.Rollback()
+		for _, table := range []string{"routes", "events", "oauth"} {
+			if _, err = tx.Exec("DELETE FROM "+table+" WHERE namespace=? AND session=?", s.Store.namespace, id); err != nil {
+				fail(w, 500, "database error")
+				return
+			}
+		}
+		if _, err = tx.Exec("DELETE FROM sessions WHERE namespace=? AND id=?", s.Store.namespace, id); err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		if err = tx.Commit(); err != nil {
 			fail(w, 500, "database error")
 			return
 		}
@@ -144,7 +216,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var hash string
-	err := s.Store.QueryRow("SELECT token_hash FROM sessions WHERE id=?", id).Scan(&hash)
+	err := s.Store.QueryRow("SELECT token_hash FROM sessions WHERE namespace=? AND id=?", s.Store.namespace, id).Scan(&hash)
 	if err != nil || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !hmac.Equal([]byte(hash), []byte(Hash(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))) {
 		fail(w, 401, "unauthorized")
 		return
@@ -164,7 +236,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "positive attempt required")
 			return
 		}
-		result, err := s.Store.Exec("UPDATE events SET ack=1 WHERE session=? AND delivery=? AND attempt=?", id, data.Delivery, data.Attempt)
+		result, err := s.Store.Exec("UPDATE events SET ack=1 WHERE namespace=? AND session=? AND delivery=? AND attempt=?", s.Store.namespace, id, data.Delivery, data.Attempt)
 		if err != nil {
 			fail(w, 500, "database error")
 			return
@@ -174,6 +246,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 409, "delivery attempt no longer current")
 			return
 		}
+		s.recordActivity(id, "github_webhook", "acknowledged", "")
 		reply(w, 200, map[string]bool{"ok": true})
 	case "replay":
 		s.replay(w, r, id)
@@ -208,7 +281,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := s.Store.Exec("INSERT INTO sessions(id,token_hash,callback) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET callback=excluded.callback WHERE token_hash=excluded.token_hash", data.ID, Hash(data.Token), data.Callback)
+	result, err := s.Store.Exec("INSERT INTO sessions(namespace,id,token_hash,callback) VALUES(?,?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET callback=excluded.callback WHERE sessions.token_hash=excluded.token_hash", s.Store.namespace, data.ID, Hash(data.Token), data.Callback)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -241,7 +314,7 @@ type githubPayload struct {
 	} `json:"issue"`
 }
 
-func route(tx *sql.Tx, p githubPayload) (string, error) {
+func route(tx *transaction, p githubPayload) (string, error) {
 	repo := p.Repository.ID
 	var pr int64
 	if p.PullRequest != nil {
@@ -256,7 +329,7 @@ func route(tx *sql.Tx, p githubPayload) (string, error) {
 		return "", nil
 	}
 	var id string
-	err := tx.QueryRow("SELECT session FROM routes WHERE repo=? AND pr=?", repo, pr).Scan(&id)
+	err := tx.QueryRow("SELECT session FROM routes WHERE namespace=? AND repo=? AND pr=?", tx.store.namespace, repo, pr).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -272,12 +345,17 @@ func route(tx *sql.Tx, p githubPayload) (string, error) {
 	}
 	id = matches[1]
 	var exists int
-	if err = tx.QueryRow("SELECT 1 FROM sessions WHERE id=?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRow("SELECT 1 FROM sessions WHERE namespace=? AND id=?", tx.store.namespace, id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	} else if err != nil {
 		return "", err
 	}
-	_, err = tx.Exec("INSERT INTO routes(repo,pr,session) VALUES(?,?,?)", repo, pr, id)
+	_, err = tx.Exec("INSERT INTO routes(namespace,repo,pr,session) VALUES(?,?,?,?) ON CONFLICT(namespace,repo,pr) DO NOTHING", tx.store.namespace, repo, pr, id)
+	if err != nil {
+		return "", err
+	}
+	// A concurrent request may have established the PR binding first.
+	err = tx.QueryRow("SELECT session FROM routes WHERE namespace=? AND repo=? AND pr=?", tx.store.namespace, repo, pr).Scan(&id)
 	return id, err
 }
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
@@ -325,7 +403,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	if id != "" {
 		destination = id
 	}
-	_, err = tx.Exec("INSERT OR IGNORE INTO events(delivery,session,body,event,signature) VALUES(?,?,?,?,?)", delivery, destination, raw, event, sig)
+	_, err = tx.Exec("INSERT OR IGNORE INTO events(namespace,delivery,session,body,event,signature,created) VALUES(?,?,?,?,?,?,?)", s.Store.namespace, delivery, destination, raw, event, sig, s.Now().Unix())
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -334,10 +412,13 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "database error")
 		return
 	}
+	if id != "" {
+		s.recordActivity(id, "github_webhook", "received", "", map[string]any{"method": "POST", "source": "GitHub", "path": "/github", "delivery": delivery, "status": 202, "payload": json.RawMessage(raw)})
+	}
 	reply(w, 202, map[string]bool{"queued": id != "", "unclaimed": id == ""})
 }
 func (s *Server) poll(w http.ResponseWriter, id string) {
-	rows, err := s.Store.Query("SELECT delivery,event,signature,attempt FROM events WHERE session=? AND ack=0 ORDER BY rowid LIMIT 10", id)
+	rows, err := s.Store.Query("SELECT delivery,event,signature,attempt FROM events WHERE namespace=? AND session=? AND ack=0 ORDER BY rowid LIMIT 10", s.Store.namespace, id)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -370,7 +451,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request, id string) {
 		fail(w, 400, "positive repo ID and PR number required")
 		return
 	}
-	result, err := s.Store.Exec("INSERT INTO routes(repo,pr,session) VALUES(?,?,?) ON CONFLICT(repo,pr) DO UPDATE SET session=excluded.session WHERE session=excluded.session", data.Repo, data.PR, id)
+	result, err := s.Store.Exec("INSERT INTO routes(namespace,repo,pr,session) VALUES(?,?,?,?) ON CONFLICT(namespace,repo,pr) DO UPDATE SET session=excluded.session WHERE routes.session=excluded.session", s.Store.namespace, data.Repo, data.PR, id)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -395,7 +476,7 @@ func (s *Server) beginOAuth(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	var callback string
-	if err := s.Store.QueryRow("SELECT callback FROM sessions WHERE id=?", id).Scan(&callback); err != nil || callback == "" {
+	if err := s.Store.QueryRow("SELECT callback FROM sessions WHERE namespace=? AND id=?", s.Store.namespace, id).Scan(&callback); err != nil || callback == "" {
 		fail(w, 400, "register an exact callback URL first")
 		return
 	}
@@ -406,8 +487,8 @@ func (s *Server) beginOAuth(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("DELETE FROM oauth WHERE expires<=?", s.Now().Unix()); err == nil {
-		_, err = tx.Exec("INSERT INTO oauth VALUES(?,?,?,?,?,?)", Hash(token), id, data.Provider, data.State, callback, s.Now().Add(10*time.Minute).Unix())
+	if _, err = tx.Exec("DELETE FROM oauth WHERE namespace=? AND expires<=?", s.Store.namespace, s.Now().Unix()); err == nil {
+		_, err = tx.Exec("INSERT INTO oauth(namespace,state_hash,session,provider,original_state,callback,expires) VALUES(?,?,?,?,?,?,?)", s.Store.namespace, Hash(token), id, data.Provider, data.State, callback, s.Now().Add(10*time.Minute).Unix())
 	}
 	if err != nil {
 		fail(w, 500, "database error")
@@ -417,6 +498,7 @@ func (s *Server) beginOAuth(w http.ResponseWriter, r *http.Request, id string) {
 		fail(w, 500, "database error")
 		return
 	}
+	s.recordActivity(id, "google_oauth", "started", callback, map[string]any{"method": "POST", "attemptId": Hash(token), "source": "Application backend", "path": "/sessions/" + id + "/oauth", "payload": map[string]string{"provider": "google", "state": "[redacted]"}, "status": 201})
 	reply(w, 201, map[string]string{"state": token, "redirect_uri": s.PublicURL + "/oauth/google/callback"})
 }
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
@@ -445,13 +527,13 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var state, callback string
-	err = tx.QueryRow("SELECT oauth.original_state,oauth.callback FROM oauth JOIN sessions ON sessions.id=oauth.session WHERE state_hash=? AND provider='google' AND expires>?", Hash(q.Get("state")), s.Now().Unix()).Scan(&state, &callback)
+	var state, callback, sessionID string
+	err = tx.QueryRow("SELECT oauth.original_state,oauth.callback,oauth.session FROM oauth JOIN sessions ON sessions.id=oauth.session AND sessions.namespace=oauth.namespace WHERE oauth.namespace=? AND state_hash=? AND provider='google' AND expires>?", s.Store.namespace, Hash(q.Get("state")), s.Now().Unix()).Scan(&state, &callback, &sessionID)
 	if err != nil {
 		fail(w, 400, "invalid or expired login; start again")
 		return
 	}
-	if _, err = tx.Exec("DELETE FROM oauth WHERE state_hash=?", Hash(q.Get("state"))); err != nil {
+	if _, err = tx.Exec("DELETE FROM oauth WHERE namespace=? AND state_hash=?", s.Store.namespace, Hash(q.Get("state"))); err != nil {
 		fail(w, 500, "database error")
 		return
 	}
@@ -459,9 +541,21 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "database error")
 		return
 	}
+	result := "forwarded"
+	if q.Get("error") != "" {
+		result = "provider_error"
+	}
+	payload := map[string]string{}
+	for key := range q {
+		payload[key] = "[redacted]"
+	}
+	if issuer := q.Get("iss"); issuer == "https://accounts.google.com" || issuer == "accounts.google.com" {
+		payload["iss"] = issuer
+	}
+	s.recordActivity(sessionID, "google_oauth", result, callback, map[string]any{"method": "GET", "attemptId": Hash(q.Get("state")), "source": "Google", "path": "/oauth/google/callback", "payload": payload, "status": 302})
 	target, _ := url.Parse(callback)
 	out := url.Values{"state": {state}}
-	for _, k := range []string{"code", "error", "error_description"} {
+	for _, k := range []string{"code", "error", "error_description", "iss"} {
 		if v := q.Get(k); v != "" {
 			out.Set(k, v)
 		}
@@ -482,14 +576,14 @@ func (s *Server) rawEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	id, delivery := parts[1], parts[3]
 	var hash string
-	if err := s.Store.QueryRow("SELECT token_hash FROM sessions WHERE id=?", id).Scan(&hash); err != nil || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !hmac.Equal([]byte(hash), []byte(Hash(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))) {
+	if err := s.Store.QueryRow("SELECT token_hash FROM sessions WHERE namespace=? AND id=?", s.Store.namespace, id).Scan(&hash); err != nil || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !hmac.Equal([]byte(hash), []byte(Hash(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))) {
 		fail(w, 401, "unauthorized")
 		return
 	}
 	var body []byte
 	var event, signature string
 	var attempt int64
-	err := s.Store.QueryRow("SELECT body,event,signature,attempt FROM events WHERE session=? AND delivery=?", id, delivery).Scan(&body, &event, &signature, &attempt)
+	err := s.Store.QueryRow("SELECT body,event,signature,attempt FROM events WHERE namespace=? AND session=? AND delivery=?", s.Store.namespace, id, delivery).Scan(&body, &event, &signature, &attempt)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, 404, "not found")
 		return
@@ -526,7 +620,7 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) {
 	defer tx.Rollback()
 	var owner sql.NullString
 	var body []byte
-	err = tx.QueryRow("SELECT session,body FROM events WHERE delivery=?", data.Delivery).Scan(&owner, &body)
+	err = tx.QueryRow("SELECT session,body FROM events WHERE namespace=? AND delivery=?", s.Store.namespace, data.Delivery).Scan(&owner, &body)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && owner.Valid && owner.String != id) {
 		fail(w, 404, "not found")
 		return
@@ -552,7 +646,7 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) {
 		}
 	}
 	var attempt int64
-	err = tx.QueryRow("UPDATE events SET session=?,ack=0,attempt=attempt+1 WHERE delivery=? RETURNING attempt", id, data.Delivery).Scan(&attempt)
+	err = tx.QueryRow("UPDATE events SET session=?,ack=0,attempt=attempt+1 WHERE namespace=? AND delivery=? RETURNING attempt", id, s.Store.namespace, data.Delivery).Scan(&attempt)
 	if err != nil {
 		fail(w, 500, "database error")
 		return

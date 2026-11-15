@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -200,10 +201,14 @@ func TestOAuthRoundTripReplayExpiryAndDuplicates(t *testing.T) {
 		return v["state"]
 	}
 	state := start()
-	path := "/oauth/google/callback?state=" + state + "&code=code"
+	path := "/oauth/google/callback?state=" + state + "&code=code&iss=https%3A%2F%2Faccounts.google.com"
 	w := f.req("GET", path, "", nil)
 	if w.Code != 302 || !strings.Contains(w.Header().Get("Location"), "state=app-cookie-state") {
 		t.Fatal(w.Code, w.Header())
+	}
+	target, err := url.Parse(w.Header().Get("Location"))
+	if err != nil || target.Query().Get("iss") != "https://accounts.google.com" {
+		t.Fatal("issuer was not preserved", w.Header())
 	}
 	if f.req("GET", path, "", nil).Code != 400 {
 		t.Fatal("replay accepted")

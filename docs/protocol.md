@@ -1,6 +1,6 @@
 # Protocol
 
-All API endpoints except `/healthz`, `/github`, and the OAuth callback require `Authorization: Bearer <token>`. Use HTTPS outside loopback. The API is intentionally small and currently single-operator.
+All API endpoints except `/healthz`, `/github`, and the OAuth callback require `Authorization: Bearer <token>`. Use HTTPS outside loopback. The API supports operator-managed namespaces.
 
 ## Sessions
 
@@ -64,3 +64,40 @@ Only Google query-mode authorization-code callbacks are supported. Legacy Doomer
 Each transaction snapshots the exact registered callback at creation. Later registration changes cannot redirect an in-progress login to another destination.
 
 OAuth codes and states are excluded from server access logs. Original app state is stored until redemption or expiry cleanup; expired transactions are cleaned when new ones are created. Provider credentials and tokens stay with the app. Browser reachability and cookie behavior remain the application's responsibility.
+
+## Namespaces
+
+Requests without a namespace use `default`. Existing self-hosted commands and
+URLs continue to work without extra configuration. `/namespaces/default/` also
+addresses that namespace explicitly.
+
+Create a named namespace with the relay administrator credential using
+`POST /namespaces` and a JSON body containing `id`, `token`, and `webhook_secret`.
+IDs use the session ID format above. Both secrets must be at least 32 characters.
+The namespace management token is hashed at rest. The webhook signing secret is
+stored privately because signature verification requires the original secret.
+Retrying creation requires the same credentials. Creating `default` is rejected.
+
+The response contains the namespace's `url`, for example
+`https://pepe.example.com/namespaces/my-team`. All session, webhook, status, and
+OAuth endpoints for that namespace are relative to this URL. Register the
+namespace-specific Google callback and GitHub webhook URL with those providers.
+SQLite gives each namespace an independent store. PostgreSQL uses namespace-scoped
+keys in shared tables. Both isolate session IDs, PR routes, delivery IDs, and OAuth transactions. Tokens and signing secrets from another
+namespace do not grant access. Namespace selection comes from the URL, never an
+incoming identity header. The relay administrator can manage all namespaces.
+
+CLI clients can use `--namespace my-team` or `PEPE_NAMESPACE=my-team` with the
+relay origin in `PEPE_SERVER`. Use the namespace management token as
+`PEPE_ADMIN_TOKEN` for registration and status. Use a separate identity file for
+each environment/namespace. Session tokens continue to authorize only their own
+session. A namespace management token cannot create other namespaces.
+
+Namespace boundaries establish isolation between operator-provisioned groups.
+Within a namespace, PR claims remain operator-trusted. Namespace creation and
+GitHub webhook provisioning should only be granted to an authorized controller.
+
+The default database remains at the configured `--db` path. Named stores are in
+`<db>.namespaces/<namespace>.sqlite`, and their credential registry is in the
+default database. Include both the default database and the namespace directory
+in backups. The store-level backup operation covers its selected database only.

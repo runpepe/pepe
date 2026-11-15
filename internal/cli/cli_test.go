@@ -117,3 +117,21 @@ func TestFetchRawEvent(t *testing.T) {
 		t.Fatal("raw payload changed")
 	}
 }
+
+func TestNamespaceServer(t *testing.T) {
+	for _, namespace := range []string{"", "default"} {
+		got, err := namespaceServer("https://relay.example/", namespace)
+		if err != nil || got != "https://relay.example" {
+			t.Fatalf("%s: %s %v", namespace, got, err)
+		}
+	}
+	got, err := namespaceServer("https://relay.example", "my-team")
+	if err != nil || got != "https://relay.example/namespaces/my-team" {
+		t.Fatal(got, err)
+	}
+	for _, namespace := range []string{"../escape", "ab", "_bad", "team/name"} {
+		if _, err := namespaceServer("https://relay.example", namespace); err == nil {
+			t.Fatal(namespace)
+		}
+	}
+}

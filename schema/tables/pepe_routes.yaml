@@ -1,0 +1,28 @@
+apiVersion: schemas.schemahero.io/v1alpha4
+kind: Table
+metadata:
+  name: pepe_routes
+spec:
+  database: pepe
+  name: pepe_routes
+  schema:
+    postgres:
+      primaryKey: [namespace, repo, pr]
+      columns:
+        - name: namespace
+          type: text
+          constraints:
+            notNull: true
+          default: "default"
+        - name: repo
+          type: bigint
+          constraints:
+            notNull: true
+        - name: pr
+          type: bigint
+          constraints:
+            notNull: true
+        - name: session
+          type: text
+          constraints:
+            notNull: true

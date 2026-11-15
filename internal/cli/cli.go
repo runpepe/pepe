@@ -24,6 +24,7 @@ type Config struct {
 	Listen        string `json:"listen"`
 	PublicURL     string `json:"public_url"`
 	Database      string `json:"database"`
+	DatabaseURL   string `json:"database_url"`
 	AdminToken    string `json:"admin_token"`
 	WebhookSecret string `json:"webhook_secret"`
 }
@@ -69,7 +70,7 @@ func help() {
 	fmt.Print(`Pepe — stable callbacks for disposable development environments.
 
   pepe run        Connect this workspace and deliver webhooks locally
-  pepe serve      Run a public relay (SQLite-backed)
+  pepe serve      Run a public relay (SQLite or PostgreSQL)
   pepe status     Show relay health and queue counts
   pepe replay     Requeue a stored delivery for this workspace
   pepe claim      Bind a repository ID and PR to this workspace
@@ -105,11 +106,13 @@ func serve(args []string) error {
 	config := f.String("config", "", "JSON config file (optional)")
 	listen := f.String("listen", "127.0.0.1:8080", "listen address")
 	database := f.String("db", "pepe.sqlite", "SQLite file")
+	databaseURL := f.String("database-url", os.Getenv("DATABASE_URL"), "PostgreSQL connection string (uses DATABASE_URL)")
+	storage := f.String("storage", "sqlite", "storage backend: sqlite or postgres")
 	public := f.String("public-url", "http://localhost:8080", "externally reachable URL")
 	if err := parse(f, args); err != nil {
 		return err
 	}
-	c := Config{Listen: *listen, Database: *database, PublicURL: *public, AdminToken: os.Getenv("PEPE_ADMIN_TOKEN"), WebhookSecret: os.Getenv("PEPE_GITHUB_WEBHOOK_SECRET")}
+	c := Config{Listen: *listen, Database: *database, DatabaseURL: *databaseURL, PublicURL: *public, AdminToken: os.Getenv("PEPE_ADMIN_TOKEN"), WebhookSecret: os.Getenv("PEPE_GITHUB_WEBHOOK_SECRET")}
 	if *config != "" {
 		var err error
 		c, err = readConfig(*config)
@@ -123,7 +126,19 @@ func serve(args []string) error {
 	if c.Database == "" {
 		return errors.New("database path required")
 	}
-	s, err := relay.Open(c.Database)
+	var s *relay.Store
+	var err error
+	switch *storage {
+	case "sqlite":
+		s, err = relay.Open(c.Database)
+	case "postgres":
+		if c.DatabaseURL == "" {
+			return errors.New("DATABASE_URL is required for postgres storage")
+		}
+		s, err = relay.OpenPostgres(c.DatabaseURL)
+	default:
+		return errors.New("storage must be sqlite or postgres")
+	}
 	if err != nil {
 		return err
 	}
@@ -217,6 +232,7 @@ func workspace(path string) (identity, error) {
 func runAgent(args []string) error {
 	f := flags("run")
 	server := f.String("server", os.Getenv("PEPE_SERVER"), "public relay URL")
+	namespace := f.String("namespace", os.Getenv("PEPE_NAMESPACE"), "namespace (default when omitted)")
 	target := f.String("target", "http://127.0.0.1:3000/api/github/webhook", "local webhook receiver")
 	callback := f.String("callback", "", "exact application OAuth callback URL")
 	state := f.String("state", ".pepe/identity.json", "persistent workspace identity file")
@@ -224,6 +240,11 @@ func runAgent(args []string) error {
 	if err := parse(f, args); err != nil {
 		return err
 	}
+	scopedServer, err := namespaceServer(*server, *namespace)
+	if err != nil {
+		return err
+	}
+	*server = scopedServer
 	if err := relay.ValidateURL(*server); err != nil {
 		return err
 	}
@@ -285,9 +306,15 @@ func runAgent(args []string) error {
 func status(args []string) error {
 	f := flags("status")
 	server := f.String("server", os.Getenv("PEPE_SERVER"), "public relay URL")
+	namespace := f.String("namespace", os.Getenv("PEPE_NAMESPACE"), "namespace (default when omitted)")
 	if err := parse(f, args); err != nil {
 		return err
 	}
+	scopedServer, err := namespaceServer(*server, *namespace)
+	if err != nil {
+		return err
+	}
+	*server = scopedServer
 	if err := relay.ValidateURL(*server); err != nil {
 		return err
 	}
@@ -302,12 +329,18 @@ func status(args []string) error {
 func claim(args []string) error {
 	f := flags("claim")
 	server := f.String("server", os.Getenv("PEPE_SERVER"), "public relay URL")
+	namespace := f.String("namespace", os.Getenv("PEPE_NAMESPACE"), "namespace (default when omitted)")
 	state := f.String("state", ".pepe/identity.json", "workspace identity")
 	repo := f.Int64("repo", 0, "numeric GitHub repository ID")
 	pr := f.Int64("pr", 0, "PR number")
 	if err := parse(f, args); err != nil {
 		return err
 	}
+	scopedServer, err := namespaceServer(*server, *namespace)
+	if err != nil {
+		return err
+	}
+	*server = scopedServer
 	if err := relay.ValidateURL(*server); err != nil {
 		return err
 	}
@@ -325,6 +358,7 @@ func claim(args []string) error {
 func replay(args []string) error {
 	f := flags("replay")
 	server := f.String("server", os.Getenv("PEPE_SERVER"), "public relay URL")
+	namespace := f.String("namespace", os.Getenv("PEPE_NAMESPACE"), "namespace (default when omitted)")
 	state := f.String("state", ".pepe/identity.json", "workspace identity")
 	delivery := f.String("delivery", "", "stored upstream delivery ID")
 	if err := parse(f, args); err != nil {
@@ -333,6 +367,11 @@ func replay(args []string) error {
 	if *delivery == "" {
 		return errors.New("delivery required")
 	}
+	scopedServer, err := namespaceServer(*server, *namespace)
+	if err != nil {
+		return err
+	}
+	*server = scopedServer
 	if err := relay.ValidateURL(*server); err != nil {
 		return err
 	}
@@ -351,4 +390,26 @@ func replay(args []string) error {
 	b, _ = json.Marshal(out)
 	fmt.Println(string(b))
 	return nil
+}
+
+func namespaceServer(server, namespace string) (string, error) {
+	if err := relay.ValidateURL(server); err != nil {
+		return "", err
+	}
+	if namespace == "" || namespace == "default" {
+		return strings.TrimRight(server, "/"), nil
+	}
+	for _, c := range namespace {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return "", errors.New("invalid namespace")
+		}
+	}
+	if len(namespace) < 3 || len(namespace) > 64 || namespace[0] == '_' || namespace[0] == '-' {
+		return "", errors.New("invalid namespace")
+	}
+	u, _ := url.Parse(server)
+	if u.Path != "" && u.Path != "/" {
+		return "", errors.New("use a relay origin with --namespace")
+	}
+	return strings.TrimRight(server, "/") + "/namespaces/" + namespace, nil
 }

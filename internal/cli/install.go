@@ -139,7 +139,7 @@ func install(args []string) error {
 		return errors.New("existing configuration has a different public URL; update it explicitly before reinstalling")
 	}
 	if _, err = os.Stat(path); os.IsNotExist(err) {
-		c := Config{"127.0.0.1:8080", strings.TrimRight(*public, "/"), "/var/lib/pepe/pepe.sqlite", randomToken(), randomToken()}
+		c := Config{Listen: "127.0.0.1:8080", PublicURL: strings.TrimRight(*public, "/"), Database: "/var/lib/pepe/pepe.sqlite", AdminToken: randomToken(), WebhookSecret: randomToken()}
 		b, _ := json.MarshalIndent(c, "", "  ")
 		if err = atomicWrite(path, append(b, '\n'), 0600); err != nil {
 			return err

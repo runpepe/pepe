@@ -1,0 +1,51 @@
+apiVersion: schemas.schemahero.io/v1alpha4
+kind: Table
+metadata:
+  name: pepe_events
+spec:
+  database: pepe
+  name: pepe_events
+  schema:
+    postgres:
+      primaryKey: [namespace, delivery]
+      columns:
+        - name: namespace
+          type: text
+          constraints:
+            notNull: true
+          default: "default"
+        - name: delivery
+          type: text
+          constraints:
+            notNull: true
+        - name: session
+          type: text
+        - name: body
+          type: bytea
+          constraints:
+            notNull: true
+        - name: event
+          type: text
+          constraints:
+            notNull: true
+        - name: signature
+          type: text
+          constraints:
+            notNull: true
+        - name: ack
+          type: integer
+          constraints:
+            notNull: true
+          default: "0"
+        - name: created
+          type: bigint
+          constraints:
+            notNull: true
+        - name: attempt
+          type: bigint
+          constraints:
+            notNull: true
+          default: "1"
+      indexes:
+        - name: pepe_events_pending
+          columns: [namespace, session, ack, created]

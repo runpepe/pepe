@@ -1,0 +1,23 @@
+apiVersion: schemas.schemahero.io/v1alpha4
+kind: Table
+metadata:
+  name: pepe_namespaces
+spec:
+  database: pepe
+  name: pepe_namespaces
+  schema:
+    postgres:
+      primaryKey: [id]
+      columns:
+        - name: id
+          type: text
+          constraints:
+            notNull: true
+        - name: token_hash
+          type: text
+          constraints:
+            notNull: true
+        - name: webhook_secret
+          type: text
+          constraints:
+            notNull: true

@@ -1,5 +1,27 @@
 # Operations
 
+## PostgreSQL development
+
+Set `DATABASE_URL`, `PEPE_SERVER`, `PEPE_ADMIN_TOKEN`, and
+`PEPE_GITHUB_WEBHOOK_SECRET` in Doppler `pepe/dev`. Then run:
+
+```sh
+make migrate
+make dev PEPE_STORAGE=postgres
+```
+
+`make migrate` plans and applies only `schema/tables/` through SchemaHero.
+These manifests define `pepe_namespaces`, `pepe_sessions`, `pepe_routes`,
+`pepe_events`, and `pepe_oauth`, with no foreign keys. The application never
+applies PostgreSQL schema changes during startup. Keep the connection string in
+Doppler; the development command receives it through the environment.
+
+`pepe serve --storage postgres` reads `DATABASE_URL`. The optional
+`--database-url` flag or `database_url` JSON config field can also supply it.
+SQLite remains the default storage backend. PostgreSQL namespace stores share
+the configured database, with namespace-scoped keys and queries. Use PostgreSQL
+backup tools for this backend.
+
 ## Configuration
 
 `pepe serve` accepts flags and `PEPE_ADMIN_TOKEN` / `PEPE_GITHUB_WEBHOOK_SECRET`. With `--config`, a JSON file replaces those settings:

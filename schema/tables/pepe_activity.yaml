@@ -1,0 +1,42 @@
+apiVersion: schemas.schemahero.io/v1alpha4
+kind: Table
+metadata:
+  name: pepe_activity
+spec:
+  database: pepe
+  name: pepe_activity
+  schema:
+    postgres:
+      primaryKey: [namespace, id]
+      columns:
+        - name: namespace
+          type: text
+          constraints:
+            notNull: true
+        - name: id
+          type: text
+          constraints:
+            notNull: true
+        - name: session
+          type: text
+          constraints:
+            notNull: true
+        - name: kind
+          type: text
+          constraints:
+            notNull: true
+        - name: result
+          type: text
+          constraints:
+            notNull: true
+        - name: destination
+          type: text
+          constraints:
+            notNull: true
+        - name: created
+          type: bigint
+          constraints:
+            notNull: true
+      indexes:
+        - name: pepe_activity_session
+          columns: [namespace, session, created]

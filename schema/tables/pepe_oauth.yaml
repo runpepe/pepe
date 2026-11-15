@@ -1,0 +1,40 @@
+apiVersion: schemas.schemahero.io/v1alpha4
+kind: Table
+metadata:
+  name: pepe_oauth
+spec:
+  database: pepe
+  name: pepe_oauth
+  schema:
+    postgres:
+      primaryKey: [namespace, state_hash]
+      columns:
+        - name: namespace
+          type: text
+          constraints:
+            notNull: true
+          default: "default"
+        - name: state_hash
+          type: text
+          constraints:
+            notNull: true
+        - name: session
+          type: text
+          constraints:
+            notNull: true
+        - name: provider
+          type: text
+          constraints:
+            notNull: true
+        - name: original_state
+          type: text
+          constraints:
+            notNull: true
+        - name: callback
+          type: text
+          constraints:
+            notNull: true
+        - name: expires
+          type: bigint
+          constraints:
+            notNull: true
