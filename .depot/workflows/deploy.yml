@@ -1,0 +1,64 @@
+name: Deploy Pepe relay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pepe-relay-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test relay
+        run: go test ./...
+      - name: Check Docker availability
+        run: docker info --format '{{.ServerVersion}}'
+      - name: Deploy relay with Wrangler
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RELAY_DATABASE_URL: ${{ secrets.RELAY_DATABASE_URL }}
+          PEPE_ADMIN_TOKEN: ${{ secrets.PEPE_ADMIN_TOKEN }}
+          PEPE_GITHUB_WEBHOOK_SECRET: ${{ secrets.PEPE_GITHUB_WEBHOOK_SECRET }}
+        run: |
+          set -eu
+          secrets_file=$(mktemp)
+          trap 'rm -f "$secrets_file"' EXIT
+          : "${CLOUDFLARE_ACCOUNT_ID:?Add CLOUDFLARE_ACCOUNT_ID in Depot CI}"
+          : "${CLOUDFLARE_API_TOKEN:?Add CLOUDFLARE_API_TOKEN in Depot CI}"
+          node --input-type=module - "$secrets_file" <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const { RELAY_DATABASE_URL, PEPE_ADMIN_TOKEN, PEPE_GITHUB_WEBHOOK_SECRET } = process.env;
+          const values = { DATABASE_URL: RELAY_DATABASE_URL, PEPE_ADMIN_TOKEN, PEPE_GITHUB_WEBHOOK_SECRET };
+          for (const [key, value] of Object.entries(values)) {
+            if (!value) throw new Error(`Missing relay secret ${key}`);
+          }
+          let database;
+          try { database = new URL(RELAY_DATABASE_URL); } catch { throw new Error('Invalid RELAY_DATABASE_URL'); }
+          if (!['postgres:', 'postgresql:'].includes(database.protocol) ||
+              database.port !== '6432' || database.pathname !== '/pepe_relay' ||
+              database.searchParams.get('sslmode') !== 'verify-full') {
+            throw new Error('RELAY_DATABASE_URL must be the TLS-verified pooled connection to pepe_relay');
+          }
+          writeFileSync(process.argv[2], JSON.stringify(values), { mode: 0o600 });
+          NODE
+          unset RELAY_DATABASE_URL PEPE_ADMIN_TOKEN PEPE_GITHUB_WEBHOOK_SECRET
+          npx --yes wrangler@4.168.0 deploy --message "$GITHUB_SHA" --secrets-file "$secrets_file"
+      - name: Verify relay and database health
+        run: curl --fail --silent --show-error --max-time 40 --retry 8 --retry-delay 5 --retry-connrefused https://relay.runpepe.dev/healthz

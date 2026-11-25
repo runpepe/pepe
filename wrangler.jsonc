@@ -1,0 +1,21 @@
+{
+  "name": "pepe-relay",
+  "main": "deploy/cloudflare/relay-worker.mjs",
+  "compatibility_date": "2026-11-24",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "relay.runpepe.dev", "custom_domain": true }],
+  "version_metadata": { "binding": "DEPLOYMENT_VERSION" },
+  "vars": { "PEPE_PUBLIC_URL": "https://relay.runpepe.dev" },
+  "containers": [
+    {
+      "class_name": "RelayContainer",
+      "scheduling_policy": "durable_object",
+      "images": { "relay": { "dockerfile": "./Dockerfile" } }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "RelayContainer" }]
+  },
+  "exports": { "RelayContainer": { "type": "durable-object", "storage": "sqlite" } }
+}

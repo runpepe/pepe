@@ -1,5 +1,8 @@
 .git
-dist
+.depot
 .pepe
-*.sqlite*
-.env
+.wrangler
+dist
+.env*
+.dev.vars*
+**/*.sqlite*

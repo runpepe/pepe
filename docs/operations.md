@@ -16,6 +16,12 @@ These manifests define `pepe_namespaces`, `pepe_sessions`, `pepe_routes`,
 applies PostgreSQL schema changes during startup. Keep the connection string in
 Doppler; the development command receives it through the environment.
 
+On exe.dev, `make dev` uses the current VM's HTTPS hostname as the advertised
+relay origin. Set `PEPE_DEV_RELAY_ORIGIN` in the dev configuration to use a
+stable HTTPS origin that routes to this relay. Use the same override in the
+dashboard's dev configuration. A stable origin lets Google keep the same
+authorized redirect URI as development VMs change.
+
 `pepe serve --storage postgres` reads `DATABASE_URL`. The optional
 `--database-url` flag or `database_url` JSON config field can also supply it.
 SQLite remains the default storage backend. PostgreSQL namespace stores share
